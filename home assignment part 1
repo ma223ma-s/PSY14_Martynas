@@ -1,0 +1,301 @@
+#load in packages
+
+library(psych)
+library(car)
+library(lmtest)
+library(sandwich)
+library(boot)
+library(lmboot)
+library(tidyverse)
+library(lm.beta)
+
+
+coef_table = function(model) {
+  require(lm.beta)
+  mod_sum = summary(model)
+  mod_sum_p_values = as.character(round(mod_sum$coefficients[,
+                                                             4], 3))
+  mod_sum_p_values[mod_sum_p_values != "0" & mod_sum_p_values !=
+                     "1"] = substr(mod_sum_p_values[mod_sum_p_values != "0" &
+                                                      mod_sum_p_values != "1"], 2, nchar(mod_sum_p_values[mod_sum_p_values !=
+                                                                                                            "0" & mod_sum_p_values != "1"]))
+  mod_sum_p_values[mod_sum_p_values == "0"] = "<.001"
+  mod_sum_table = cbind(as.data.frame(round(cbind(coef(model),
+                                                  confint(model), c(0, lm.beta(model)$standardized.coefficients[c(2:length(model$coefficients))])),
+                                            2)), mod_sum_p_values)
+  names(mod_sum_table) = c("b", "95%CI lb", "95%CI ub", "Std.Beta",
+                           "p-value")
+  mod_sum_table["(Intercept)", "Std.Beta"] = "0"
+  return(mod_sum_table)
+}
+
+
+
+
+#load in the dataset
+
+data_pain = read.csv("https://tinyurl.com/yxm5rd89")
+
+#adjust variables for ease of analysis
+
+data_pain = data_pain %>% 
+  mutate(household_income1000 = household_income / 1000, sex = factor(sex))
+
+#print raw data and display descriptive stats
+
+describe(data_pain)
+summary(data_pain)
+
+#histogram plots before coding error correction
+
+pain_plot_old <- data_pain %>%
+  ggplot()+
+  aes(x = pain) +
+  geom_histogram(binwidth = 1)
+
+plot(pain_plot_old)
+
+
+STAT_trait_plot_old <- data_pain %>%
+  ggplot()+
+  aes(x = STAI_trait) +
+  geom_histogram(binwidth = 1)
+
+plot(STAT_trait_plot_old)
+
+#correct coding errors in the data set (none excluded)
+
+data_pain_corr <- data_pain %>% 
+  mutate(pain = replace(pain, pain == "55", 5),
+         STAI_trait = replace(STAI_trait, STAI_trait == "4.2", 42))
+
+
+describe(data_pain_corr)
+summary(data_pain_corr)
+
+
+#repeat histogram plots after coding error correction (shows a more normal distribution)
+
+pain_plot_new <- data_pain_corr %>%
+  ggplot()+
+  aes(x = pain) +
+  geom_histogram(binwidth = 1)
+
+
+STAI_trait_plot_new <- data_pain_corr %>%
+  ggplot()+
+  aes(x = STAI_trait) +
+  geom_histogram(binwidth = 1)
+
+
+#Scatter plots before and after coding error correction
+
+data_pain %>%
+  mutate(rownum = row.names(data_pain_corr)) %>%
+  ggplot() + aes(x = age, y = pain, label = rownum) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+
+data_pain_corr %>%
+  mutate(rownum = row.names(data_pain_corr)) %>%
+  ggplot() + aes(x = age, y = pain, label = rownum) +
+  geom_point() +
+  geom_smooth(method = "lm")
+
+
+#For easier comparison between before and after coding error correction
+
+grid.arrange(pain_plot_old, pain_plot_new, ncol = 2)
+
+grid.arrange(STAT_trait_plot_old, STAI_trait_plot_new, ncol = 2)
+  
+
+
+#create the models for the subset and with all of the predictors
+
+mod_pain_sub <- lm(pain ~ age + sex, data = data_pain_corr)
+
+mod_pain_full <- lm(pain ~ age + sex + STAI_trait + pain_cat + 
+                      mindfulness + cortisol_serum + cortisol_saliva,
+                    data = data_pain_corr)
+
+
+summary(mod_pain_sub)
+
+summary(mod_pain_full)
+
+#Checking Cook's distance, residuals & leverage
+
+mod_pain_sub %>% 
+  plot(which = 5)
+
+mod_pain_full %>% 
+  plot(which = 5)
+
+mod_pain_sub %>% 
+  plot(which = 4)
+
+mod_pain_full %>% 
+  plot(which = 4)
+
+
+#Testing for normality with a QQ plot
+
+mod_pain_sub %>% 
+  plot(which = 2)
+
+mod_pain_full %>% 
+  plot(which = 2)
+
+
+#plotting of histograms to check for normal distribution of residuals
+
+residuals_mod_pain_sub = enframe(residuals(mod_pain_sub))
+residuals_mod_pain_sub %>%
+  ggplot() + aes(x = value) + geom_histogram(binwidth = 0.3)
+
+
+residuals_mod_pain_full = enframe(residuals(mod_pain_full))
+residuals_mod_pain_full %>%
+  ggplot() + aes(x = value) + geom_histogram(binwidth = 0.3)
+
+
+#measure of skew and kurtosis (normality is not violated)
+
+describe(residuals(mod_pain_sub))
+
+describe(residuals(mod_pain_full))
+
+
+
+#testing for linearity (Tukey test significant, but only slightly)
+
+mod_pain_sub %>% 
+  residualPlots()
+
+mod_pain_full %>% 
+  residualPlots()
+
+
+
+#testing for homoscedasticity (assumption for homoscedasticity not violated)
+
+mod_pain_sub %>% 
+  plot(which = 3)
+
+mod_pain_full %>% 
+  plot(which = 3)
+
+
+
+mod_pain_sub %>% 
+  ncvTest()
+
+mod_pain_full %>% 
+  ncvTest()
+
+
+
+#testing for multicollinearity
+
+mod_pain_sub %>%
+  vif()
+
+mod_pain_full %>%
+  vif()
+
+
+
+#removing multicollinearity (excluding cortisol_saliva)
+
+mod_pain_noCS <- lm(pain ~ age + sex + STAI_trait + pain_cat + 
+                      mindfulness + cortisol_serum,
+                    data = data_pain_corr)
+
+
+summary(mod_pain_noCS)
+
+#Revisiting outliers
+
+mod_pain_noCS %>% 
+  plot(which = 4)
+
+
+#checking again for normality, linearity and homoscedasticity
+
+mod_pain_noCS %>% 
+  plot(which = 2)
+
+
+#observable changes in residual distribution after removal of cortisol_saliva
+
+residuals_mod_pain_noCS = enframe(residuals(mod_pain_noCS))
+residuals_mod_pain_noCS %>%
+  ggplot() + aes(x = value) + geom_histogram(binwidth = 0.3)
+
+
+#linearity
+
+mod_pain_noCS %>% 
+  residualPlots()
+
+
+#homoscedasticity
+
+mod_pain_noCS %>% 
+  plot(which = 3)
+
+
+mod_pain_noCS %>% 
+  ncvTest()
+
+
+#multicollinearity (all variance inflation factor values are now < 3)
+
+mod_pain_noCS %>%
+  vif()
+
+
+
+#confidence intervals of the unstandardized regression coefficients
+
+confint(mod_pain_sub, level = .90)
+
+confint(mod_pain_noCS, level = .90)
+
+
+#AIC measure
+
+AIC(mod_pain_sub)
+
+AIC(mod_pain_noCS)
+
+
+
+#standardized coefficients
+
+lm.beta(mod_pain_sub)
+
+lm.beta(mod_pain_noCS)
+
+coef_table(mod_pain_sub)
+
+coef_table(mod_pain_noCS)
+
+
+#Prediction and regression line testing
+
+predict(mod_pain_noCS)
+
+
+#ANOVA
+
+anova(mod_pain_sub, mod_pain_noCS)
+
+
+
+
+
+
+
